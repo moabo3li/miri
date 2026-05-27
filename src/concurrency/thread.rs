@@ -631,20 +631,6 @@ impl<'tcx> ThreadManager<'tcx> {
 
 impl<'tcx> EvalContextPrivExt<'tcx> for MiriInterpCx<'tcx> {}
 trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
-    #[inline]
-    fn run_on_stack_empty(&mut self) -> InterpResult<'tcx, Poll<()>> {
-        let this = self.eval_context_mut();
-        let active_thread = this.active_thread_mut();
-        active_thread.origin_span = DUMMY_SP; // reset, the old value no longer applied
-        let mut callback = active_thread
-            .on_stack_empty
-            .take()
-            .expect("`on_stack_empty` not set up, or already running");
-        let res = callback(this)?;
-        this.active_thread_mut().on_stack_empty = Some(callback);
-        interp_ok(res)
-    }
-
     /// Decide which action to take next and on which thread.
     ///
     /// The currently implemented scheduling policy is the one that is commonly
@@ -856,6 +842,21 @@ trait EvalContextPrivExt<'tcx>: MiriInterpCxExt<'tcx> {
 // Public interface to thread management.
 impl<'tcx> EvalContextExt<'tcx> for crate::MiriInterpCx<'tcx> {}
 pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
+    /// Public because this is used by Priroda.
+    #[inline]
+    fn run_on_stack_empty(&mut self) -> InterpResult<'tcx, Poll<()>> {
+        let this = self.eval_context_mut();
+        let active_thread = this.active_thread_mut();
+        active_thread.origin_span = DUMMY_SP; // reset, the old value no longer applied
+        let mut callback = active_thread
+            .on_stack_empty
+            .take()
+            .expect("`on_stack_empty` not set up, or already running");
+        let res = callback(this)?;
+        this.active_thread_mut().on_stack_empty = Some(callback);
+        interp_ok(res)
+    }
+
     #[inline]
     fn thread_id_try_from(&self, id: impl TryInto<u32>) -> Result<ThreadId, ThreadLookupError> {
         self.eval_context_ref().machine.threads.thread_id_try_from(id)
