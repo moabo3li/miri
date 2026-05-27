@@ -7,6 +7,9 @@ version = "0.1.0"
 default-run = "miri"
 edition = "2024"
 
+[workspace]
+members = [".", "priroda"]
+
 [lib]
 test = true     # we have unit tests
 doctest = false # but no doc tests
