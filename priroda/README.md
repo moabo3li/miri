@@ -47,7 +47,7 @@ cargo test
 
 | Command | Description |
 |---|---|
-| Enter, `s`, `step` | Execute one Miri interpreter step. |
+| Enter, `si`, `stepi` | Execute one Miri interpreter step. |
 | `c`, `continue` | Continue until the program finishes or reaches a breakpoint. |
 | `b <path>:<line>`, `break <path>:<line>` | Add a source-location breakpoint. |
 | `q`, `quit` | Exit Priroda. |
