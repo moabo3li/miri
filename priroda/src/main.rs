@@ -125,6 +125,7 @@ type BreakpointTable = HashMap<PathBuf, HashSet<usize>>;
 struct PrirodaContext<'tcx> {
     ecx: MiriInterpCx<'tcx>,
     breakpoints: BreakpointTable,
+    last_breakpoint_hit: Option<(PathBuf, usize)>,
     current_location: Option<SourceLocation>,
     last_location: Option<SourceLocation>,
 }
@@ -160,7 +161,13 @@ fn normalize_path(path: PathBuf) -> PathBuf {
 
 impl<'tcx> PrirodaContext<'tcx> {
     fn new(ecx: MiriInterpCx<'tcx>) -> Self {
-        Self { ecx, breakpoints: HashMap::new(), current_location: None, last_location: None }
+        Self {
+            ecx,
+            breakpoints: HashMap::new(),
+            last_breakpoint_hit: None,
+            current_location: None,
+            last_location: None,
+        }
     }
 
     fn local_path(&self, location: &SourceLocation) -> Option<PathBuf> {
@@ -287,21 +294,27 @@ impl<'tcx> PrirodaContext<'tcx> {
         }
     }
 
-    fn is_at_breakpoint(&self) -> bool {
-        // FIXME: avoid repeated stops when one source line maps to multiple MIR statements.
-        let Some(location) = &self.current_location else {
+    fn is_at_breakpoint(&mut self) -> bool {
+        // Avoid reporting the same source breakpoint repeatedly when several MIR locations map to the same source line.
+        let Some(bp) = self.current_breakpoint() else {
+            self.last_breakpoint_hit = None;
             return false;
         };
 
-        let Some(path) = &self.local_path(location) else {
+        if self.last_breakpoint_hit.as_ref() == Some(&bp) {
             return false;
-        };
+        }
 
-        let lines = match self.breakpoints.get(path) {
-            Some(lines) => lines,
-            None => return false,
-        };
-        lines.contains(&location.line)
+        self.last_breakpoint_hit = Some(bp);
+        true
+    }
+
+    fn current_breakpoint(&self) -> Option<(PathBuf, usize)> {
+        let location = self.current_location.as_ref()?;
+        let path = self.local_path(location)?;
+        let lines = self.breakpoints.get(&path)?;
+
+        if lines.contains(&location.line) { Some((path, location.line)) } else { None }
     }
 
     fn resolve_current_location(&self) -> Option<SourceLocation> {
