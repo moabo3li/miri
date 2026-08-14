@@ -1,0 +1,23 @@
+Content-Length: {CONTENT_LENGTH}
+
+{"seq":1,"type":"response","request_seq":1,"success":true,"command":"initialize","body":{"supportsConfigurationDoneRequest":true},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":2,"type":"event","event":"initialized"}Content-Length: {CONTENT_LENGTH}
+
+{"seq":3,"type":"response","request_seq":2,"success":true,"command":"launch","error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":4,"type":"response","request_seq":3,"success":true,"command":"setBreakpoints","body":{"breakpoints":[{"verified":true,"source":{"path":"tests/ui/dap/step_in_enters_call.rs"},"line":11}]},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":5,"type":"response","request_seq":4,"success":true,"command":"configurationDone","error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":6,"type":"event","event":"stopped","body":{"reason":"entry","description":null,"threadId":1,"preserveFocusHint":null,"text":null,"allThreadsStopped":true,"hitBreakpointIds":null}}Content-Length: {CONTENT_LENGTH}
+
+{"seq":7,"type":"response","request_seq":5,"success":true,"command":"continue","body":{"allThreadsContinued":true},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":8,"type":"event","event":"stopped","body":{"reason":"breakpoint","description":null,"threadId":1,"preserveFocusHint":null,"text":null,"allThreadsStopped":true,"hitBreakpointIds":null}}Content-Length: {CONTENT_LENGTH}
+
+{"seq":9,"type":"response","request_seq":6,"success":true,"command":"stepIn","error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":10,"type":"event","event":"stopped","body":{"reason":"step","description":null,"threadId":1,"preserveFocusHint":null,"text":null,"allThreadsStopped":true,"hitBreakpointIds":null}}Content-Length: {CONTENT_LENGTH}
+
+{"seq":11,"type":"response","request_seq":7,"success":true,"command":"stackTrace","body":{"stackFrames":[{"id":1,"name":"callee","source":{"name":"step_in_enters_call.rs","path":"{MANIFEST_DIR}/tests/ui/dap/step_in_enters_call.rs","sourceReference":0},"line":4,"column":9},{"id":2,"name":"main","source":{"name":"step_in_enters_call.rs","path":"{MANIFEST_DIR}/tests/ui/dap/step_in_enters_call.rs","sourceReference":0},"line":11,"column":5}],"totalFrames":2},"error":null}
