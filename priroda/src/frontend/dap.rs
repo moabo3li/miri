@@ -13,16 +13,18 @@ use emmy_dap_types::prelude::types::{
     StoppedEventReason, Thread, Variable,
 };
 use emmy_dap_types::prelude::{Command, Event, Request, ResponseBody, Server};
-use miri::{InterpErrorInfo, InterpErrorKind, InterpResult, TerminationInfo, bug};
+use miri::{
+    InterpErrorInfo, InterpErrorKind, InterpResult, TerminationInfo, ThreadId, ThreadStatus, bug,
+};
 
 use crate::debugger::{
     ExecutionResult, FrameId, LocalDesc, PrirodaContext, SourceLocation, StackFrameDesc, StepResult,
 };
 
-// Priroda still exposes one interpreted thread to DAP. Stack frames are assigned
-// opaque 1-based ids by `PrirodaContext::stack_frames`; `scopes` and `variables`
-// address a frame's locals by reusing that id as the `variablesReference`.
-const THREAD_ID: i64 = 1;
+// Thread ids are Miri thread ids offset by 1, so Miri's main thread (id 0) stays
+// DAP thread 1. Stack frames are assigned opaque 1-based ids by
+// `PrirodaContext::stack_frames`; `scopes` and `variables` address a frame's
+// locals by reusing that id as the `variablesReference`.
 
 enum HandlerResponse {
     Success(ResponseBody),
@@ -187,7 +189,7 @@ impl<R: Read, W: Write> DapSession<R, W> {
             Command::Launch(_) => self.handle_launch(),
             Command::Attach(_) => self.handle_attach(),
             Command::ConfigurationDone => self.handle_configuration_done(session),
-            Command::Threads => self.handle_threads(),
+            Command::Threads => self.handle_threads(session),
             Command::StackTrace(args) => self.handle_stack_trace(args.thread_id, session),
             Command::Scopes(args) => self.handle_scopes(args.frame_id, session),
             Command::Variables(args) => self.handle_variables(args.variables_reference, session),
@@ -358,15 +360,23 @@ impl<R: Read, W: Write> DapSession<R, W> {
         }
     }
 
-    /// FIXME: replace this with Miri thread state once Priroda exposes a
-    /// frontend-facing thread model.
-    fn handle_threads(&self) -> Result<HandlerSuccess, &'static str> {
+    /// FIXME: decide whether terminated threads should also be reported once a
+    /// fixture shows an editor benefits from seeing them.
+    fn handle_threads<'tcx>(
+        &self,
+        session: &PrirodaContext<'tcx>,
+    ) -> Result<HandlerSuccess, &'static str> {
         self.reject_after_termination()?;
 
+        let threads = session
+            .threads()
+            .into_iter()
+            .filter(|thread| thread.status != ThreadStatus::Terminated)
+            .map(|thread| Thread { id: Self::thread_id_to_dap(thread.id), name: thread.name })
+            .collect();
+
         Ok(HandlerSuccess {
-            response: HandlerResponse::Success(ResponseBody::Threads(ThreadsResponse {
-                threads: vec![Thread { id: THREAD_ID, name: "main".to_string() }],
-            })),
+            response: HandlerResponse::Success(ResponseBody::Threads(ThreadsResponse { threads })),
             state: None,
             events: Vec::new(),
             outcome: HandlerOutcome::Continue,
@@ -400,6 +410,9 @@ impl<R: Read, W: Write> DapSession<R, W> {
     }
 
     /// FIXME: grow capabilities as Priroda adds DAP features.
+    ///
+    /// `supportsSingleThreadExecutionRequests` is deliberately not advertised:
+    /// Priroda steps the active thread only and does not honor `singleThread`.
     fn handle_initialize(&self) -> Result<HandlerSuccess, &'static str> {
         if self.state != DapState::Fresh {
             return Err("initialize may only be sent once");
@@ -408,7 +421,6 @@ impl<R: Read, W: Write> DapSession<R, W> {
         Ok(HandlerSuccess {
             response: HandlerResponse::Success(ResponseBody::Initialize(Capabilities {
                 supports_configuration_done_request: Some(true),
-                supports_single_thread_execution_requests: Some(true),
                 ..Capabilities::default()
             })),
             state: Some(DapState::Initialized),
@@ -599,10 +611,21 @@ impl<R: Read, W: Write> DapSession<R, W> {
     }
 
     fn require_thread_id(thread_id: i64) -> Result<(), &'static str> {
-        if thread_id != THREAD_ID {
+        if Self::thread_id_from_dap(thread_id) != Some(ThreadId::MAIN_THREAD) {
             return Err("unknown threadId");
         }
         Ok(())
+    }
+
+    /// Encode a Miri thread id as a DAP thread id (main thread 0 becomes 1).
+    fn thread_id_to_dap(thread_id: ThreadId) -> i64 {
+        i64::from(thread_id.to_u32()) + 1
+    }
+
+    /// Decode a DAP thread id back into a Miri thread id.
+    fn thread_id_from_dap(dap_id: i64) -> Option<ThreadId> {
+        let raw = u32::try_from(dap_id.checked_sub(1)?).ok()?;
+        Some(ThreadId::new_unchecked(raw))
     }
 
     fn execution_outcome<'tcx>(result: InterpResult<'tcx, ExecutionResult>) -> ExecutionOutcome {
@@ -633,7 +656,7 @@ impl<R: Read, W: Write> DapSession<R, W> {
         StoppedEventBody {
             reason,
             description: None,
-            thread_id: Some(THREAD_ID),
+            thread_id: Some(Self::thread_id_to_dap(ThreadId::MAIN_THREAD)),
             preserve_focus_hint: None,
             text,
             all_threads_stopped: Some(true),
@@ -645,7 +668,7 @@ impl<R: Read, W: Write> DapSession<R, W> {
         StoppedEventBody {
             reason,
             description: None,
-            thread_id: Some(THREAD_ID),
+            thread_id: Some(Self::thread_id_to_dap(ThreadId::MAIN_THREAD)),
             preserve_focus_hint: None,
             text: None,
             all_threads_stopped: Some(true),
