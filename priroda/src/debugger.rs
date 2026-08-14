@@ -570,6 +570,7 @@ impl<'tcx> PrirodaContext<'tcx> {
         match command {
             DebuggerCommand::StepI => self.stepi().map(CommandResult::Execution),
             DebuggerCommand::Step => self.step().map(CommandResult::Execution),
+            DebuggerCommand::Next => self.step_over_source().map(CommandResult::Execution),
             DebuggerCommand::Continue => self.continue_execution().map(CommandResult::Execution),
             DebuggerCommand::Breakpoint(path, line) =>
                 interp_ok(CommandResult::BreakpointResult(self.set_breakpoint(path, line))),
@@ -1127,6 +1128,7 @@ impl<'tcx> PrirodaContext<'tcx> {
 pub(super) enum DebuggerCommand {
     StepI,
     Step,
+    Next,
     TerminateSession,
     Continue,
     Breakpoint(PathBuf, usize),
