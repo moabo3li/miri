@@ -28,6 +28,37 @@ impl SourceLocation {
     }
 }
 
+/// Stable identifier for a stack frame, resolvable back to the thread and frame
+/// index that produced it.
+///
+/// The id is opaque to frontends. It packs the owning thread id in the high bits
+/// and the 1-based frame index in the low bits, so a frame id is unique across
+/// threads even though a DAP frame id is a single integer.
+pub(super) struct FrameId(pub(super) i64);
+
+impl FrameId {
+    /// Encode a thread and 0-based frame index into a unique frame id.
+    fn new(thread: ThreadId, frame_index: usize) -> Self {
+        let thread = i64::from(thread.to_u32());
+        let frame = i64::try_from(frame_index).unwrap() + 1;
+        Self((thread << 32) | frame)
+    }
+}
+
+/// A frontend-facing description of one stack frame.
+pub(super) struct StackFrameDesc {
+    /// Stable frame id for follow-up requests.
+    pub(super) id: FrameId,
+    /// The thread this frame belongs to.
+    pub(super) thread: ThreadId,
+    /// Function name for display.
+    pub(super) name: String,
+    /// Source location of the frame's current position, if it has one.
+    pub(super) source: Option<SourceLocation>,
+    /// Index into the owning thread's stack, `0` for the innermost frame.
+    pub(super) frame_index: usize,
+}
+
 /// Source-level breakpoints indexed by normalized path, then line.
 type BreakpointTable = HashMap<PathBuf, HashSet<usize>>;
 
@@ -215,6 +246,31 @@ impl<'tcx> PrirodaContext<'tcx> {
         Some(frame.instance().to_string())
     }
 
+    /// Describe every user-relevant frame on the active thread's stack, from the
+    /// innermost frame out to the stack root.
+    ///
+    /// `frame_index` is the raw interpreter stack index (0 = innermost), so a
+    /// frame id can be resolved back to the underlying frame even though std and
+    /// runtime frames are omitted here.
+    pub(super) fn stack_frames(&self) -> Vec<StackFrameDesc> {
+        let thread = self.ecx.active_thread();
+        self.ecx
+            .active_thread_stack()
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(_, frame)| frame.extra.user_relevance == u8::MAX)
+            .map(|(frame_index, frame)| {
+                StackFrameDesc {
+                    id: FrameId::new(thread, frame_index),
+                    thread,
+                    name: frame.instance().to_string(),
+                    source: self.source_location(frame.current_span()),
+                    frame_index,
+                }
+            })
+            .collect()
+    }
     /// Continue execution until reaching a breakpoint or propagating termination.
     pub(super) fn continue_execution(&mut self) -> InterpResult<'tcx, ExecutionResult> {
         if let Some(result) = self.already_finished() {
@@ -405,7 +461,11 @@ impl<'tcx> PrirodaContext<'tcx> {
     }
 
     fn resolve_current_location(&self) -> Option<SourceLocation> {
-        let span = self.ecx.machine.current_user_relevant_span();
+        self.source_location(self.ecx.machine.current_user_relevant_span())
+    }
+
+    /// Resolve a span to a source location, or `None` if the span is dummy.
+    fn source_location(&self, span: Span) -> Option<SourceLocation> {
         if span.is_dummy() {
             return None;
         }
