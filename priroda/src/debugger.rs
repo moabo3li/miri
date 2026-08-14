@@ -34,6 +34,7 @@ impl SourceLocation {
 /// The id is opaque to frontends. It packs the owning thread id in the high bits
 /// and the 1-based frame index in the low bits, so a frame id is unique across
 /// threads even though a DAP frame id is a single integer.
+#[derive(Clone, Copy)]
 pub(super) struct FrameId(pub(super) i64);
 
 impl FrameId {
@@ -43,20 +44,28 @@ impl FrameId {
         let frame = i64::try_from(frame_index).unwrap() + 1;
         Self((thread << 32) | frame)
     }
+
+    /// Split a frame id back into its thread and 0-based frame index.
+    ///
+    /// Returns `None` for values that could not have come from [`Self::new`].
+    fn parts(self) -> Option<(ThreadId, usize)> {
+        if self.0 <= 0 {
+            return None;
+        }
+        let thread = u32::try_from(self.0 >> 32).ok()?;
+        let frame_index = usize::try_from((self.0 & 0xFFFF_FFFF) - 1).ok()?;
+        Some((ThreadId::new_unchecked(thread), frame_index))
+    }
 }
 
 /// A frontend-facing description of one stack frame.
 pub(super) struct StackFrameDesc {
     /// Stable frame id for follow-up requests.
     pub(super) id: FrameId,
-    /// The thread this frame belongs to.
-    pub(super) thread: ThreadId,
     /// Function name for display.
     pub(super) name: String,
     /// Source location of the frame's current position, if it has one.
     pub(super) source: Option<SourceLocation>,
-    /// Index into the owning thread's stack, `0` for the innermost frame.
-    pub(super) frame_index: usize,
 }
 
 /// Source-level breakpoints indexed by normalized path, then line.
@@ -242,10 +251,6 @@ impl<'tcx> PrirodaContext<'tcx> {
 
     /// Describe every user-relevant frame on the active thread's stack, from the
     /// innermost frame out to the stack root.
-    ///
-    /// `frame_index` is the raw interpreter stack index (0 = innermost), so a
-    /// frame id can be resolved back to the underlying frame even though std and
-    /// runtime frames are omitted here.
     pub(super) fn stack_frames(&self) -> Vec<StackFrameDesc> {
         let thread = self.ecx.active_thread();
         self.ecx
@@ -257,10 +262,8 @@ impl<'tcx> PrirodaContext<'tcx> {
             .map(|(frame_index, frame)| {
                 StackFrameDesc {
                     id: FrameId::new(thread, frame_index),
-                    thread,
                     name: frame.instance().to_string(),
                     source: self.source_location(frame.current_span()),
-                    frame_index,
                 }
             })
             .collect()
@@ -521,6 +524,40 @@ impl<'tcx> PrirodaContext<'tcx> {
         };
 
         self.build_local_descs(frame)
+    }
+
+    /// Returns structured descriptions for locals in the frame addressed by
+    /// `frame_id`, or `None` if the id does not address a live frame.
+    pub(super) fn list_locals_for_frame(&self, frame_id: FrameId) -> Option<Vec<LocalDesc>> {
+        let frame = self.frame_by_id(frame_id)?;
+        Some(self.build_local_descs(frame))
+    }
+
+    /// Resolve a frame id to the interpreter frame it addresses.
+    ///
+    /// Until Priroda can address more than the active thread, only frames whose
+    /// encoded thread matches the active thread resolve here.
+    fn frame_by_id(&self, frame_id: FrameId) -> Option<&Frame<'tcx, Provenance, FrameExtra<'tcx>>> {
+        let (thread, frame_index) = frame_id.parts()?;
+        if thread != self.ecx.active_thread() {
+            return None;
+        }
+        let stack = self.ecx.active_thread_stack();
+        stack.get(stack.len().checked_sub(1)?.checked_sub(frame_index)?)
+    }
+
+    /// Describe the user-relevant frame addressed by `frame_id`, or `None` if the
+    /// id does not address a live user frame.
+    pub(super) fn stack_frame(&self, frame_id: FrameId) -> Option<StackFrameDesc> {
+        let frame = self.frame_by_id(frame_id)?;
+        if frame.extra.user_relevance != u8::MAX {
+            return None;
+        }
+        Some(StackFrameDesc {
+            id: frame_id,
+            name: frame.instance().to_string(),
+            source: self.source_location(frame.current_span()),
+        })
     }
 
     /// Renders the current byte range of an indirect MIR value.
@@ -888,13 +925,39 @@ impl<'tcx> PrirodaContext<'tcx> {
             Some(Either::Left(_) | Either::Right(_)) => {
                 let op = self
                     .ecx
-                    .local_to_op(local, None)
+                    .local_at_frame_to_op(frame, local, None)
                     .expect("this error can only occur in CTFE on generic code");
                 local_desc.value = self.render_source_shaped_op(op);
             }
         };
 
         Some(local_desc)
+    }
+
+    /// Evaluate a projected MIR place relative to a specific frame.
+    ///
+    /// `ecx.eval_place_to_op` always starts from the current (innermost) frame,
+    /// so caller frames need this variant that resolves the place's base local
+    /// against `frame` and then applies the projection.
+    fn eval_place_to_op_at_frame(
+        &self,
+        frame: &Frame<'tcx, Provenance, FrameExtra<'tcx>>,
+        place: mir::Place<'tcx>,
+    ) -> InterpResult<'tcx, OpTy<'tcx>> {
+        let mut op = self.ecx.local_at_frame_to_op(frame, place.local, None)?;
+        for elem in place.projection.iter() {
+            // `project` resolves `Index(local)` through the current frame. An
+            // explicit unsupported value is better than reading the wrong frame's
+            // index local.
+            if matches!(elem, ProjectionElem::Index(_)) {
+                return Err(miri::err_unsup_format!(
+                    "frame-relative debug-info index projections are not supported yet"
+                ))
+                .into();
+            }
+            op = self.ecx.project(&op, elem)?;
+        }
+        interp_ok(op)
     }
 
     fn build_local_descs(
@@ -957,8 +1020,7 @@ impl<'tcx> PrirodaContext<'tcx> {
                     let source_projection =
                         Self::render_source_projection(var_debug_info.composite.as_deref());
                     let value = self
-                        .ecx
-                        .eval_place_to_op(*place, None)
+                        .eval_place_to_op_at_frame(frame, *place)
                         .map(|op| self.render_source_shaped_op(op))
                         .unwrap_or_else(|err| format!("<error: {}>", err.to_string()));
 
