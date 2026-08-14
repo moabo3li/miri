@@ -249,12 +249,24 @@ impl<'tcx> PrirodaContext<'tcx> {
         self.resume(ResumeMode::FirstUserSourceLocation)
     }
 
+    /// Return the id of the currently active thread.
+    pub(super) fn active_thread(&self) -> ThreadId {
+        self.ecx.active_thread()
+    }
+
     /// Describe every user-relevant frame on the active thread's stack, from the
     /// innermost frame out to the stack root.
     pub(super) fn stack_frames(&self) -> Vec<StackFrameDesc> {
-        let thread = self.ecx.active_thread();
-        self.ecx
-            .active_thread_stack()
+        self.stack_frames_for_thread(self.active_thread())
+    }
+
+    /// Describe every user-relevant frame on the given thread's stack, from the
+    /// innermost frame out to the stack root.
+    pub(super) fn stack_frames_for_thread(&self, thread: ThreadId) -> Vec<StackFrameDesc> {
+        let Some(stack) = self.ecx.thread_stack(thread) else {
+            return Vec::new();
+        };
+        stack
             .iter()
             .rev()
             .enumerate()
@@ -541,15 +553,9 @@ impl<'tcx> PrirodaContext<'tcx> {
     }
 
     /// Resolve a frame id to the interpreter frame it addresses.
-    ///
-    /// Until Priroda can address more than the active thread, only frames whose
-    /// encoded thread matches the active thread resolve here.
     fn frame_by_id(&self, frame_id: FrameId) -> Option<&Frame<'tcx, Provenance, FrameExtra<'tcx>>> {
         let (thread, frame_index) = frame_id.parts()?;
-        if thread != self.ecx.active_thread() {
-            return None;
-        }
-        let stack = self.ecx.active_thread_stack();
+        let stack = self.ecx.thread_stack(thread)?;
         stack.get(stack.len().checked_sub(1)?.checked_sub(frame_index)?)
     }
 

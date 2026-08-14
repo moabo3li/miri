@@ -329,9 +329,11 @@ impl<R: Read, W: Write> DapSession<R, W> {
             ExecutionOutcome::Stopped(result) => {
                 // A normal startup stop is an entry event, but an interpreter
                 // error before the first user location is an exception stop.
+                let thread_id = Self::thread_id_to_dap(session.active_thread());
                 let stopped = match result {
-                    StepResult::Step => Self::stopped_event_body(StoppedEventReason::Entry),
-                    result => Self::stopped_event_for(result),
+                    StepResult::Step =>
+                        Self::stopped_event_body(StoppedEventReason::Entry, thread_id),
+                    result => Self::stopped_event_for(result, thread_id),
                 };
                 Ok(HandlerSuccess {
                     response: HandlerResponse::Success(ResponseBody::ConfigurationDone),
@@ -389,10 +391,10 @@ impl<R: Read, W: Write> DapSession<R, W> {
         session: &PrirodaContext<'tcx>,
     ) -> Result<HandlerSuccess, &'static str> {
         self.require_stopped()?;
-        Self::require_thread_id(thread_id)?;
+        let thread_id = Self::require_thread_id(thread_id, session)?;
 
         let stack_frames = session
-            .stack_frames()
+            .stack_frames_for_thread(thread_id)
             .into_iter()
             .map(|frame| Self::stack_frame_to_dap(session, frame))
             .collect::<Vec<_>>();
@@ -437,14 +439,17 @@ impl<R: Read, W: Write> DapSession<R, W> {
         session: &mut PrirodaContext<'tcx>,
     ) -> Result<HandlerSuccess, &'static str> {
         self.require_stopped()?;
-        Self::require_thread_id(thread_id)?;
+        let _ = Self::require_thread_id(thread_id, session)?;
 
         match Self::execution_outcome(session.step()) {
             ExecutionOutcome::Stopped(result) =>
                 Ok(HandlerSuccess {
                     response: HandlerResponse::Success(body),
                     state: Some(DapState::Stopped),
-                    events: vec![Event::Stopped(Self::stopped_event_for(result))],
+                    events: vec![Event::Stopped(Self::stopped_event_for(
+                        result,
+                        Self::thread_id_to_dap(session.active_thread()),
+                    ))],
                     outcome: HandlerOutcome::Continue,
                 }),
             ExecutionOutcome::Terminated { code } =>
@@ -473,7 +478,7 @@ impl<R: Read, W: Write> DapSession<R, W> {
         session: &mut PrirodaContext<'tcx>,
     ) -> Result<HandlerSuccess, &'static str> {
         self.require_stopped()?;
-        Self::require_thread_id(thread_id)?;
+        let _ = Self::require_thread_id(thread_id, session)?;
 
         let body = ResponseBody::Continue(ContinueResponse { all_threads_continued: Some(true) });
 
@@ -494,7 +499,10 @@ impl<R: Read, W: Write> DapSession<R, W> {
                 Ok(HandlerSuccess {
                     response: HandlerResponse::Success(body),
                     state: Some(DapState::Stopped),
-                    events: vec![Event::Stopped(Self::stopped_event_for(result))],
+                    events: vec![Event::Stopped(Self::stopped_event_for(
+                        result,
+                        Self::thread_id_to_dap(session.active_thread()),
+                    ))],
                     outcome: HandlerOutcome::Continue,
                 }),
             ExecutionOutcome::Terminated { code } =>
@@ -610,11 +618,16 @@ impl<R: Read, W: Write> DapSession<R, W> {
         Ok(())
     }
 
-    fn require_thread_id(thread_id: i64) -> Result<(), &'static str> {
-        if Self::thread_id_from_dap(thread_id) != Some(ThreadId::MAIN_THREAD) {
-            return Err("unknown threadId");
-        }
-        Ok(())
+    fn require_thread_id<'tcx>(
+        thread_id: i64,
+        session: &PrirodaContext<'tcx>,
+    ) -> Result<ThreadId, &'static str> {
+        let thread_id = Self::thread_id_from_dap(thread_id).ok_or("unknown threadId")?;
+        let exists = session
+            .threads()
+            .iter()
+            .any(|thread| thread.id == thread_id && thread.status != ThreadStatus::Terminated);
+        if exists { Ok(thread_id) } else { Err("unknown threadId") }
     }
 
     /// Encode a Miri thread id as a DAP thread id (main thread 0 becomes 1).
@@ -647,7 +660,7 @@ impl<R: Read, W: Write> DapSession<R, W> {
         ExecutionOutcome::Failed(kind.to_string())
     }
 
-    fn stopped_event_for(result: StepResult) -> StoppedEventBody {
+    fn stopped_event_for(result: StepResult, thread_id: i64) -> StoppedEventBody {
         let (reason, text) = match result {
             StepResult::Step => (StoppedEventReason::Step, None),
             StepResult::Breakpoint => (StoppedEventReason::Breakpoint, None),
@@ -656,7 +669,7 @@ impl<R: Read, W: Write> DapSession<R, W> {
         StoppedEventBody {
             reason,
             description: None,
-            thread_id: Some(Self::thread_id_to_dap(ThreadId::MAIN_THREAD)),
+            thread_id: Some(thread_id),
             preserve_focus_hint: None,
             text,
             all_threads_stopped: Some(true),
@@ -664,11 +677,11 @@ impl<R: Read, W: Write> DapSession<R, W> {
         }
     }
 
-    fn stopped_event_body(reason: StoppedEventReason) -> StoppedEventBody {
+    fn stopped_event_body(reason: StoppedEventReason, thread_id: i64) -> StoppedEventBody {
         StoppedEventBody {
             reason,
             description: None,
-            thread_id: Some(Self::thread_id_to_dap(ThreadId::MAIN_THREAD)),
+            thread_id: Some(thread_id),
             preserve_focus_hint: None,
             text: None,
             all_threads_stopped: Some(true),
