@@ -240,12 +240,6 @@ impl<'tcx> PrirodaContext<'tcx> {
         self.resume(ResumeMode::FirstUserSourceLocation)
     }
 
-    /// Return the active frame name while DAP still reports only one frame.
-    pub(super) fn current_frame_name(&self) -> Option<String> {
-        let frame = self.ecx.active_thread_stack().last()?;
-        Some(frame.instance().to_string())
-    }
-
     /// Describe every user-relevant frame on the active thread's stack, from the
     /// innermost frame out to the stack root.
     ///
