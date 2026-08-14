@@ -492,6 +492,7 @@ impl<'tcx> PrirodaContext<'tcx> {
                 interp_ok(CommandResult::SingleLocal(self.get_local(local))),
             DebuggerCommand::Follow(alloc_id, offset) =>
                 self.follow_alloc(alloc_id, offset).map(CommandResult::Memory),
+            DebuggerCommand::Backtrace => interp_ok(CommandResult::Backtrace(self.stack_frames())),
             DebuggerCommand::TerminateSession =>
                 self.finish_session().map(|()| CommandResult::TerminateSession),
         }
@@ -992,6 +993,7 @@ pub(super) enum DebuggerCommand {
     ListLocals,
     Print(usize),
     Follow(AllocId, usize),
+    Backtrace,
 }
 
 pub(super) enum BreakpointSetResult {
@@ -1006,6 +1008,7 @@ pub(super) enum CommandResult {
     Locals(Vec<LocalDesc>),
     SingleLocal(Option<LocalDesc>),
     Memory(String),
+    Backtrace(Vec<StackFrameDesc>),
     // FIXME: distinguish terminating the debugger session from disconnecting a
     // frontend and terminating the interpreted program once multiple frontends exist.
     TerminateSession,

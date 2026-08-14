@@ -124,6 +124,23 @@ impl Cli {
                     None => println!("no local for this id"),
                 },
             CommandResult::Memory(memory) => println!("{memory}"),
+            CommandResult::Backtrace(frames) =>
+                for (index, frame) in frames.iter().enumerate() {
+                    match &frame.source {
+                        Some(location) =>
+                            if let Some(path) = session.local_path(location) {
+                                println!(
+                                    "#{index} {} at {}:{}",
+                                    frame.name,
+                                    path.display(),
+                                    location.line
+                                );
+                            } else {
+                                println!("#{index} {}", frame.name);
+                            },
+                        None => println!("#{index} {}", frame.name),
+                    }
+                },
             CommandResult::TerminateSession => {
                 println!("quitting");
                 return interp_ok(false);
@@ -157,6 +174,7 @@ impl Cli {
             "l" | "locals" => Some(DebuggerCommand::ListLocals),
             "p" | "print" => self.parse_print_local(args),
             "f" | "follow" => self.parse_follow(args),
+            "bt" | "backtrace" => Some(DebuggerCommand::Backtrace),
             _ => None,
         }
     }
