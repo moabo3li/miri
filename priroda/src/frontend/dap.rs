@@ -145,13 +145,15 @@ impl<R: Read, W: Write> DapSession<R, W> {
             let request = match self.server.poll_request() {
                 Ok(Some(request)) => request,
                 Ok(None) => return Ok(()),
-                // The message body has already been consumed. js-debug can send
-                // commands like `enableNetworking`, which `emmy_dap_types` reports
-                // as parse errors because it has no unknown-command variant.
-                // FIXME: send a DAP error response once unknown commands are
-                // representable.
+                // `poll_request` reads an entire length-prefixed message before it
+                // fails to deserialize it, so a parse error leaves the stream at the
+                // next message boundary. Unknown extension commands (for example
+                // js-debug's `enableNetworking`, sent to every session it owns) must
+                // not kill the whole session, so skip them and keep serving.
+                // FIXME: respond with a proper error once `emmy_dap_types` can
+                // represent unknown commands instead of rejecting them.
                 Err(ServerError::ParseError(_)) => {
-                    eprintln!("priroda dap: skipping request that could not be deserialized");
+                    eprintln!("priroda dap: skipping unrecognized request");
                     continue;
                 }
                 Err(err) => return Err(err),
@@ -250,11 +252,14 @@ impl<R: Read, W: Write> DapSession<R, W> {
         })
     }
 
+    /// FIXME: connect attach arguments to Priroda's session model.
+    ///
+    /// `attach` is used by the extension-less VS Code `debugServer` flow, where
+    /// VS Code connects to an already-running Priroda TCP server instead of
+    /// spawning a debugger. It starts the same single session as `launch`.
     fn handle_attach(&self) -> Result<HandlerSuccess, &'static str> {
         self.require_state(DapState::Initialized)?;
 
-        // VS Code's extension-free `debugServer` template uses `attach`.
-        // Priroda still starts the same single interpreted session as `launch`.
         Ok(HandlerSuccess {
             response: HandlerResponse::Success(ResponseBody::Attach),
             state: Some(DapState::Launched),

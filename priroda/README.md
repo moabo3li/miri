@@ -42,14 +42,19 @@ cargo run -- ../tests/pass/empty_main.rs
 
 Priroda speaks a bounded Debug Adapter Protocol prototype over stdio with
 `--dap`, or over TCP with `--port N`. It currently supports the startup
-handshake, stops at the first
-user-relevant source location after `configurationDone`, reports one current
-stack frame, exposes one flat Locals scope, and maps `list_locals()` into DAP
+handshake, stops at the first user-relevant source location after
+`configurationDone`, reports the user-relevant stack frames for the selected
+thread, exposes one flat Locals scope per frame, and maps frame locals into DAP
 variables with no child expansion.
 
-The `next` and `stepIn` requests are wired to Priroda's existing source-line
-step so VS Code can drive one visible step. They are not true DAP step-over or
-step-in semantics yet.
+`stepIn` steps into a call, while `next` steps over it using the debugger core's
+source step-over policy. Threads are observed through Miri's read-only thread
+snapshots: Priroda reports thread ids and names but keeps execution all-stop and
+does not advertise `singleThread` control.
+
+Known limitations: there is no scheduler-aware multi-thread execution control,
+no `stepOut`, and source step-over can still stop on the same line when a caller
+and callee share a source line.
 
 ### VS Code
 
@@ -70,7 +75,8 @@ graphical features.
 
 The templates assume `${workspaceFolder}` is the `miri/priroda` directory that
 contains them. Copy them into that directory's `.vscode/`, or edit
-`--manifest-path` and the final `args` entry when using them from elsewhere:
+`--manifest-path`, the final `args` entry, the `cargo` toolchain, and the
+sysroot argument when using them from elsewhere:
 
 ```sh
 mkdir -p /path/to/miri/priroda/.vscode
@@ -124,8 +130,8 @@ the background task as ready and connects with:
 
 Priroda accepts one TCP connection and waits for VS Code before running the DAP
 handshake. VS Code's built-in JavaScript debugger may also send extension
-requests of its own, such as `enableNetworking` for its network preview; Priroda
-skips unrecognized requests rather than failing, so those are ignored.
+requests of its own (for example `enableNetworking` for its network preview);
+Priroda skips unrecognized requests rather than failing, so those are ignored.
 
 ## Test
 
@@ -153,8 +159,11 @@ RUSTC_BLESS=1 cargo test
 |---|---|
 | Enter, `si`, `stepi` | Execute one Miri interpreter step. |
 | `s`, `step` | Step until the displayed source location changes. |
+| `n`, `next` | Step over the current source line, without stopping inside calls it makes. |
 | `c`, `continue` | Continue until the program finishes or reaches a breakpoint. |
 | `b <path>:<line>`, `break <path>:<line>` | Add a source-location breakpoint. |
+| `bt`, `backtrace` | List the user-relevant stack frames, innermost first. |
+| `threads` | List the interpreted threads with their status. |
 | `l`, `locals` | List source-level locals in the current frame by name. |
 | `p <local>`, `print <local>` | Print one MIR local by numeric id. |
 | `f <alloc> <offset>`, `follow <alloc> <offset>` | Render allocation bytes from an offset, including the full allocation size. |
