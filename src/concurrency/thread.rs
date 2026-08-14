@@ -106,6 +106,28 @@ pub enum BlockReason {
     Genmc,
 }
 
+/// The observable execution status of a thread, exposed to debuggers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThreadStatus {
+    /// The thread is enabled and can be executed.
+    Enabled,
+    /// The thread is blocked on the given reason.
+    Blocked(BlockReason),
+    /// The thread has terminated its execution.
+    Terminated,
+}
+
+/// A point-in-time snapshot of a thread's observable state, for debuggers.
+///
+/// This is a read-only observation API: nothing here lets a debugger change
+/// which thread runs next.
+#[derive(Clone, Debug)]
+pub struct ThreadSnapshot {
+    pub id: ThreadId,
+    pub name: String,
+    pub status: ThreadStatus,
+}
+
 /// The state of a thread.
 enum ThreadState<'tcx> {
     /// The thread is enabled and can be executed.
@@ -482,6 +504,14 @@ impl<'tcx> ThreadManager<'tcx> {
         &self.threads[self.active_thread].stack
     }
 
+    /// Borrow the stack of the given thread, or `None` if there is no such thread.
+    pub fn thread_stack(
+        &self,
+        thread_id: ThreadId,
+    ) -> Option<&[Frame<'tcx, Provenance, FrameExtra<'tcx>>]> {
+        self.threads.get(thread_id).map(|thread| &thread.stack[..])
+    }
+
     /// Mutably borrow the stack of the active thread.
     pub fn active_thread_stack_mut(
         &mut self,
@@ -491,6 +521,27 @@ impl<'tcx> ThreadManager<'tcx> {
 
     pub(super) fn all_threads(&self) -> impl Iterator<Item = (ThreadId, &Thread<'tcx>)> {
         self.threads.iter_enumerated()
+    }
+
+    /// Return a snapshot of every thread's observable state, for debuggers.
+    ///
+    /// Includes terminated threads so callers can distinguish them from live
+    /// ones; filtering is the caller's decision.
+    pub fn debugger_threads(&self) -> Vec<ThreadSnapshot> {
+        self.threads
+            .iter_enumerated()
+            .map(|(id, thread)| {
+                ThreadSnapshot {
+                    id,
+                    name: thread.thread_display_name(id),
+                    status: match &thread.state {
+                        ThreadState::Enabled => ThreadStatus::Enabled,
+                        ThreadState::Blocked { reason, .. } => ThreadStatus::Blocked(*reason),
+                        ThreadState::Terminated => ThreadStatus::Terminated,
+                    },
+                }
+            })
+            .collect()
     }
 
     pub fn all_blocked_stacks(
@@ -1065,6 +1116,21 @@ pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
     fn active_thread_stack<'a>(&'a self) -> &'a [Frame<'tcx, Provenance, FrameExtra<'tcx>>] {
         let this = self.eval_context_ref();
         this.machine.threads.active_thread_stack()
+    }
+
+    #[inline]
+    fn thread_stack<'a>(
+        &'a self,
+        thread_id: ThreadId,
+    ) -> Option<&'a [Frame<'tcx, Provenance, FrameExtra<'tcx>>]> {
+        let this = self.eval_context_ref();
+        this.machine.threads.thread_stack(thread_id)
+    }
+
+    #[inline]
+    fn debugger_threads(&self) -> Vec<ThreadSnapshot> {
+        let this = self.eval_context_ref();
+        this.machine.threads.debugger_threads()
     }
 
     #[inline]
