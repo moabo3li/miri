@@ -149,6 +149,13 @@ enum ResumeMode {
     /// `None` means the current interpreter position has no source location, so
     /// the first mapped source location is good enough to report.
     SourceLine(Option<(PathBuf, usize)>),
+    /// Step over the source position `start_position`, entered from a stack of
+    /// depth `start_stack_depth`.
+    ///
+    /// Execution keeps going while it is deeper than `start_stack_depth` (i.e.
+    /// inside a call made from the stepped-over line), and stops once it is back
+    /// at that depth or shallower and the displayed source position has changed.
+    StepOver { start_position: Option<(PathBuf, usize)>, start_stack_depth: usize },
     /// Stop at the first mapped source location from a user-relevant frame.
     ///
     /// This is the DAP entry-stop primitive: it skips over interpreter startup
@@ -234,7 +241,18 @@ impl<'tcx> PrirodaContext<'tcx> {
         self.resume(ResumeMode::MirInstruction)
     }
     /// Step until the displayed source file or line changes.
+    ///
+    /// This is the CLI source-level step; it shares its stepping semantics with
+    /// [`Self::step_in_source`].
     pub(super) fn step(&mut self) -> InterpResult<'tcx, ExecutionResult> {
+        self.step_in_source()
+    }
+
+    /// Step into the next source location, entering any call that is made.
+    ///
+    /// This is DAP `stepIn`. For now it shares the CLI source-step semantics:
+    /// stop when the displayed source position changes.
+    pub(super) fn step_in_source(&mut self) -> InterpResult<'tcx, ExecutionResult> {
         if let Some(result) = self.already_finished() {
             return interp_ok(result);
         }
@@ -242,6 +260,28 @@ impl<'tcx> PrirodaContext<'tcx> {
             return interp_ok(self.already_stopped_exception());
         }
         self.resume(ResumeMode::SourceLine(self.current_source_position()))
+    }
+
+    /// Step over the current source position, not stopping inside any call it makes.
+    ///
+    /// This is DAP `next`: it records the current source position and stack depth
+    /// before advancing, then keeps stepping until execution is back at that depth
+    /// (or shallower) and the displayed source position has changed.
+    pub(super) fn step_over_source(&mut self) -> InterpResult<'tcx, ExecutionResult> {
+        if let Some(result) = self.already_finished() {
+            return interp_ok(result);
+        }
+        if self.pending_exception.is_some() {
+            return interp_ok(self.already_stopped_exception());
+        }
+        let start_position = self.current_source_position();
+        let start_stack_depth = self.active_thread_stack_depth();
+        self.resume(ResumeMode::StepOver { start_position, start_stack_depth })
+    }
+
+    /// Number of frames on the active thread's stack.
+    fn active_thread_stack_depth(&self) -> usize {
+        self.ecx.active_thread_stack().len()
     }
 
     /// Run until the initial editor-visible stop point.
@@ -363,7 +403,14 @@ impl<'tcx> PrirodaContext<'tcx> {
 
             // An explicit breakpoint should stop execution even when the current
             // MIR instruction would normally be hidden during manual stepping.
-            if self.is_at_breakpoint() {
+            // A step-over that started on a breakpoint must not immediately
+            // re-trigger that breakpoint when it returns to the stepped-over line.
+            let at_step_over_start = matches!(
+                &mode,
+                ResumeMode::StepOver { start_position, .. }
+                    if self.current_source_position().as_ref() == start_position.as_ref()
+            );
+            if !at_step_over_start && self.is_at_breakpoint() {
                 return interp_ok(ExecutionResult::Stopped(StepResult::Breakpoint));
             }
 
@@ -395,6 +442,30 @@ impl<'tcx> PrirodaContext<'tcx> {
                             }
                         }
 
+                        _ => {}
+                    }
+                }
+
+                ResumeMode::StepOver { ref start_position, start_stack_depth } => {
+                    // While deeper than where we started, we are inside a call
+                    // made from the stepped-over line; keep going.
+                    if self.active_thread_stack_depth() > start_stack_depth {
+                        continue;
+                    }
+
+                    // Back at (or shallower than) the starting depth: stop once
+                    // the displayed source position has changed.
+                    match (start_position, &self.current_location) {
+                        (None, Some(_)) =>
+                            return interp_ok(ExecutionResult::Stopped(StepResult::Step)),
+                        (Some((start_path, start_line)), Some(current_location)) => {
+                            if let Some(current_path) = self.local_path(current_location)
+                                && (*start_path != current_path
+                                    || *start_line != current_location.line)
+                            {
+                                return interp_ok(ExecutionResult::Stopped(StepResult::Step));
+                            }
+                        }
                         _ => {}
                     }
                 }
