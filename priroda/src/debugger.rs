@@ -268,6 +268,12 @@ impl<'tcx> PrirodaContext<'tcx> {
             })
             .collect()
     }
+
+    /// Return a snapshot of every thread the interpreter currently knows about.
+    pub(super) fn threads(&self) -> Vec<ThreadSnapshot> {
+        self.ecx.debugger_threads()
+    }
+
     /// Continue execution until reaching a breakpoint or propagating termination.
     pub(super) fn continue_execution(&mut self) -> InterpResult<'tcx, ExecutionResult> {
         if let Some(result) = self.already_finished() {
@@ -490,6 +496,7 @@ impl<'tcx> PrirodaContext<'tcx> {
             DebuggerCommand::Follow(alloc_id, offset) =>
                 self.follow_alloc(alloc_id, offset).map(CommandResult::Memory),
             DebuggerCommand::Backtrace => interp_ok(CommandResult::Backtrace(self.stack_frames())),
+            DebuggerCommand::Threads => interp_ok(CommandResult::Threads(self.threads())),
             DebuggerCommand::TerminateSession =>
                 self.finish_session().map(|()| CommandResult::TerminateSession),
         }
@@ -1050,6 +1057,7 @@ pub(super) enum DebuggerCommand {
     Print(usize),
     Follow(AllocId, usize),
     Backtrace,
+    Threads,
 }
 
 pub(super) enum BreakpointSetResult {
@@ -1065,6 +1073,7 @@ pub(super) enum CommandResult {
     SingleLocal(Option<LocalDesc>),
     Memory(String),
     Backtrace(Vec<StackFrameDesc>),
+    Threads(Vec<ThreadSnapshot>),
     // FIXME: distinguish terminating the debugger session from disconnecting a
     // frontend and terminating the interpreted program once multiple frontends exist.
     TerminateSession,

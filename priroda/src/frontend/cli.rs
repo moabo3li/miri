@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
-use miri::{InterpResult, interp_ok};
+use miri::{InterpResult, ThreadStatus, interp_ok};
 use rustc_middle::mir::interpret::AllocId;
 
 use crate::debugger::{
@@ -141,6 +141,16 @@ impl Cli {
                         None => println!("#{index} {}", frame.name),
                     }
                 },
+            CommandResult::Threads(threads) =>
+                for thread in &threads {
+                    let id = thread.id.to_u32() + 1;
+                    let status = match thread.status {
+                        ThreadStatus::Enabled => "enabled",
+                        ThreadStatus::Blocked(_) => "blocked",
+                        ThreadStatus::Terminated => "terminated",
+                    };
+                    println!("{id} {} {status}", thread.name);
+                },
             CommandResult::TerminateSession => {
                 println!("quitting");
                 return interp_ok(false);
@@ -175,6 +185,7 @@ impl Cli {
             "p" | "print" => self.parse_print_local(args),
             "f" | "follow" => self.parse_follow(args),
             "bt" | "backtrace" => Some(DebuggerCommand::Backtrace),
+            "threads" => Some(DebuggerCommand::Threads),
             _ => None,
         }
     }
