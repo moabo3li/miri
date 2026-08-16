@@ -15,13 +15,14 @@ use emmy_dap_types::prelude::types::{
 use emmy_dap_types::prelude::{Command, Event, Request, ResponseBody, Server};
 use miri::{InterpErrorInfo, InterpErrorKind, InterpResult, TerminationInfo, bug};
 
-use crate::debugger::{ExecutionResult, LocalDesc, PrirodaContext, StepResult};
+use crate::debugger::{
+    ExecutionResult, FrameId, LocalDesc, PrirodaContext, SourceLocation, StackFrameDesc, StepResult,
+};
 
-// Priroda still exposes one interpreted thread and one selected frame to DAP.
-// Keep the ids stable so editor follow-up requests can address the stopped state.
+// Priroda still exposes one interpreted thread to DAP. Stack frames are assigned
+// opaque 1-based ids by `PrirodaContext::stack_frames`; `scopes` and `variables`
+// address a frame's locals by reusing that id as the `variablesReference`.
 const THREAD_ID: i64 = 1;
-const STACK_FRAME_ID: i64 = 1;
-const LOCALS_VARIABLES_REFERENCE: i64 = 1;
 
 enum HandlerResponse {
     Success(ResponseBody),
@@ -259,27 +260,14 @@ impl<R: Read, W: Write> DapSession<R, W> {
         session: &PrirodaContext<'tcx>,
     ) -> Result<HandlerSuccess, &'static str> {
         self.require_stopped()?;
-        Self::require_frame_id(frame_id)?;
 
-        let (source, line, column) = match &session.current_location {
+        // Resolve the selected frame so the scope reports that frame's source
+        // position and a frame-specific locals handle.
+        let frame = session.stack_frame(FrameId(frame_id)).ok_or("unknown frameId")?;
+
+        let (source, line, column) = match &frame.source {
             Some(location) => {
-                let source = session.local_path(location).as_ref().map(|path| {
-                    Source {
-                        name: path.file_name().map(|name| name.to_string_lossy().into_owned()),
-                        path: Some(path.display().to_string()),
-                        source_reference: Some(0),
-                        presentation_hint: None,
-                        origin: None,
-                        sources: None,
-                        checksums: None,
-                    }
-                });
-                let line =
-                    location.line.try_into().unwrap_or_else(|_| bug!("source line exceeds i64"));
-                let column = location
-                    .column
-                    .try_into()
-                    .unwrap_or_else(|_| bug!("source column exceeds i64"));
+                let (source, line, column) = Self::frame_source_info(session, location);
                 (source, Some(line), Some(column))
             }
             None => (None, None, None),
@@ -289,7 +277,7 @@ impl<R: Read, W: Write> DapSession<R, W> {
                 scopes: vec![Scope {
                     name: "Locals".to_string(),
                     presentation_hint: Some(ScopePresentationhint::Locals),
-                    variables_reference: LOCALS_VARIABLES_REFERENCE,
+                    variables_reference: Self::variables_reference_for_frame(frame_id),
                     named_variables: None,
                     indexed_variables: Some(0),
                     expensive: false,
@@ -312,12 +300,11 @@ impl<R: Read, W: Write> DapSession<R, W> {
         session: &PrirodaContext<'tcx>,
     ) -> Result<HandlerSuccess, &'static str> {
         self.require_stopped()?;
-        Self::require_variables_reference(variables_reference)?;
 
-        let variables = if variables_reference == LOCALS_VARIABLES_REFERENCE {
-            session.list_locals().into_iter().map(Self::local_to_variable).collect()
-        } else {
-            Vec::new()
+        let frame_id = Self::frame_id_from_reference(variables_reference);
+        let variables = match session.list_locals_for_frame(frame_id) {
+            Some(locals) => locals.into_iter().map(Self::local_to_variable).collect(),
+            None => return Err("unknown variablesReference"),
         };
 
         Ok(HandlerSuccess {
@@ -386,7 +373,6 @@ impl<R: Read, W: Write> DapSession<R, W> {
         })
     }
 
-    /// FIXME: report all frames once Priroda exposes a frontend-facing stack model.
     fn handle_stack_trace<'tcx>(
         &self,
         thread_id: i64,
@@ -395,41 +381,11 @@ impl<R: Read, W: Write> DapSession<R, W> {
         self.require_stopped()?;
         Self::require_thread_id(thread_id)?;
 
-        let stack_frames = match &session.current_location {
-            Some(location) => {
-                let path = session.local_path(location);
-                vec![StackFrame {
-                    id: STACK_FRAME_ID,
-                    name: session.current_frame_name().unwrap_or_else(|| "<unknown>".to_string()),
-                    source: path.as_ref().map(|path| {
-                        Source {
-                            name: path.file_name().map(|name| name.to_string_lossy().into_owned()),
-                            path: Some(path.display().to_string()),
-                            source_reference: Some(0),
-                            presentation_hint: None,
-                            origin: None,
-                            sources: None,
-                            checksums: None,
-                        }
-                    }),
-                    line: location
-                        .line
-                        .try_into()
-                        .unwrap_or_else(|_| bug!("source line exceeds i64")),
-                    column: location
-                        .column
-                        .try_into()
-                        .unwrap_or_else(|_| bug!("source column exceeds i64")),
-                    end_line: None,
-                    end_column: None,
-                    can_restart: None,
-                    instruction_pointer_reference: None,
-                    module_id: None,
-                    presentation_hint: None,
-                }]
-            }
-            None => Vec::new(),
-        };
+        let stack_frames = session
+            .stack_frames()
+            .into_iter()
+            .map(|frame| Self::stack_frame_to_dap(session, frame))
+            .collect::<Vec<_>>();
         let total_frames: i64 =
             stack_frames.len().try_into().unwrap_or_else(|_| bug!("frame count exceeds i64"));
         Ok(HandlerSuccess {
@@ -649,20 +605,6 @@ impl<R: Read, W: Write> DapSession<R, W> {
         Ok(())
     }
 
-    fn require_frame_id(frame_id: i64) -> Result<(), &'static str> {
-        if frame_id != STACK_FRAME_ID {
-            return Err("unknown frameId");
-        }
-        Ok(())
-    }
-
-    fn require_variables_reference(variables_reference: i64) -> Result<(), &'static str> {
-        if variables_reference != LOCALS_VARIABLES_REFERENCE {
-            return Err("unknown variablesReference");
-        }
-        Ok(())
-    }
-
     fn execution_outcome<'tcx>(result: InterpResult<'tcx, ExecutionResult>) -> ExecutionOutcome {
         match result.report_err() {
             Ok(ExecutionResult::Stopped(step)) => ExecutionOutcome::Stopped(step),
@@ -755,6 +697,67 @@ impl<R: Read, W: Write> DapSession<R, W> {
             Command::Terminate(_) => "terminate",
             Command::TerminateThreads(_) => "terminateThreads",
             Command::WriteMemory(_) => "writeMemory",
+        }
+    }
+
+    // A non-zero `variablesReference` returned by `scopes` addresses the locals of
+    // one stack frame, using the frame's id as the reference value. DAP's `0`
+    // stays reserved for "no children", so frame ids never collide with it.
+    fn variables_reference_for_frame(frame_id: i64) -> i64 {
+        frame_id
+    }
+
+    fn frame_id_from_reference(variables_reference: i64) -> FrameId {
+        FrameId(variables_reference)
+    }
+
+    /// Convert a frame's source location into the DAP `Source`/`line`/`column` triple.
+    fn frame_source_info<'tcx>(
+        session: &PrirodaContext<'tcx>,
+        location: &SourceLocation,
+    ) -> (Option<Source>, i64, i64) {
+        let source = session.local_path(location).as_ref().map(|path| {
+            Source {
+                name: path.file_name().map(|name| name.to_string_lossy().into_owned()),
+                path: Some(path.display().to_string()),
+                source_reference: Some(0),
+                presentation_hint: None,
+                origin: None,
+                sources: None,
+                checksums: None,
+            }
+        });
+        let line = location.line.try_into().unwrap_or_else(|_| bug!("source line exceeds i64"));
+        let column =
+            location.column.try_into().unwrap_or_else(|_| bug!("source column exceeds i64"));
+        (source, line, column)
+    }
+
+    /// Map one frontend-facing stack frame description onto a DAP `StackFrame`.
+    fn stack_frame_to_dap<'tcx>(
+        session: &PrirodaContext<'tcx>,
+        frame: StackFrameDesc,
+    ) -> StackFrame {
+        let (source, line, column) = match &frame.source {
+            Some(location) => {
+                let (source, line, column) = Self::frame_source_info(session, location);
+                (source, line, column)
+            }
+            None => (None, 0, 0),
+        };
+
+        StackFrame {
+            id: frame.id.0,
+            name: frame.name,
+            source,
+            line,
+            column,
+            end_line: None,
+            end_column: None,
+            can_restart: None,
+            instruction_pointer_reference: None,
+            module_id: None,
+            presentation_hint: None,
         }
     }
 

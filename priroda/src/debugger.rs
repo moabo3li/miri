@@ -28,6 +28,46 @@ impl SourceLocation {
     }
 }
 
+/// Stable identifier for a stack frame, resolvable back to the thread and frame
+/// index that produced it.
+///
+/// The id is opaque to frontends. It packs the owning thread id in the high bits
+/// and the 1-based frame index in the low bits, so a frame id is unique across
+/// threads even though a DAP frame id is a single integer.
+#[derive(Clone, Copy)]
+pub(super) struct FrameId(pub(super) i64);
+
+impl FrameId {
+    /// Encode a thread and 0-based frame index into a unique frame id.
+    fn new(thread: ThreadId, frame_index: usize) -> Self {
+        let thread = i64::from(thread.to_u32());
+        let frame = i64::try_from(frame_index).unwrap() + 1;
+        Self((thread << 32) | frame)
+    }
+
+    /// Split a frame id back into its thread and 0-based frame index.
+    ///
+    /// Returns `None` for values that could not have come from [`Self::new`].
+    fn parts(self) -> Option<(ThreadId, usize)> {
+        if self.0 <= 0 {
+            return None;
+        }
+        let thread = u32::try_from(self.0 >> 32).ok()?;
+        let frame_index = usize::try_from((self.0 & 0xFFFF_FFFF) - 1).ok()?;
+        Some((ThreadId::new_unchecked(thread), frame_index))
+    }
+}
+
+/// A frontend-facing description of one stack frame.
+pub(super) struct StackFrameDesc {
+    /// Stable frame id for follow-up requests.
+    pub(super) id: FrameId,
+    /// Function name for display.
+    pub(super) name: String,
+    /// Source location of the frame's current position, if it has one.
+    pub(super) source: Option<SourceLocation>,
+}
+
 /// Source-level breakpoints indexed by normalized path, then line.
 type BreakpointTable = HashMap<PathBuf, HashSet<usize>>;
 
@@ -209,12 +249,25 @@ impl<'tcx> PrirodaContext<'tcx> {
         self.resume(ResumeMode::FirstUserSourceLocation)
     }
 
-    /// Return the active frame name while DAP still reports only one frame.
-    pub(super) fn current_frame_name(&self) -> Option<String> {
-        let frame = self.ecx.active_thread_stack().last()?;
-        Some(frame.instance().to_string())
+    /// Describe every user-relevant frame on the active thread's stack, from the
+    /// innermost frame out to the stack root.
+    pub(super) fn stack_frames(&self) -> Vec<StackFrameDesc> {
+        let thread = self.ecx.active_thread();
+        self.ecx
+            .active_thread_stack()
+            .iter()
+            .rev()
+            .enumerate()
+            .filter(|(_, frame)| frame.extra.user_relevance == u8::MAX)
+            .map(|(frame_index, frame)| {
+                StackFrameDesc {
+                    id: FrameId::new(thread, frame_index),
+                    name: frame.instance().to_string(),
+                    source: self.source_location(frame.current_span()),
+                }
+            })
+            .collect()
     }
-
     /// Continue execution until reaching a breakpoint or propagating termination.
     pub(super) fn continue_execution(&mut self) -> InterpResult<'tcx, ExecutionResult> {
         if let Some(result) = self.already_finished() {
@@ -405,7 +458,11 @@ impl<'tcx> PrirodaContext<'tcx> {
     }
 
     fn resolve_current_location(&self) -> Option<SourceLocation> {
-        let span = self.ecx.machine.current_user_relevant_span();
+        self.source_location(self.ecx.machine.current_user_relevant_span())
+    }
+
+    /// Resolve a span to a source location, or `None` if the span is dummy.
+    fn source_location(&self, span: Span) -> Option<SourceLocation> {
         if span.is_dummy() {
             return None;
         }
@@ -432,6 +489,7 @@ impl<'tcx> PrirodaContext<'tcx> {
                 interp_ok(CommandResult::SingleLocal(self.get_local(local))),
             DebuggerCommand::Follow(alloc_id, offset) =>
                 self.follow_alloc(alloc_id, offset).map(CommandResult::Memory),
+            DebuggerCommand::Backtrace => interp_ok(CommandResult::Backtrace(self.stack_frames())),
             DebuggerCommand::TerminateSession =>
                 self.finish_session().map(|()| CommandResult::TerminateSession),
         }
@@ -466,6 +524,40 @@ impl<'tcx> PrirodaContext<'tcx> {
         };
 
         self.build_local_descs(frame)
+    }
+
+    /// Returns structured descriptions for locals in the frame addressed by
+    /// `frame_id`, or `None` if the id does not address a live frame.
+    pub(super) fn list_locals_for_frame(&self, frame_id: FrameId) -> Option<Vec<LocalDesc>> {
+        let frame = self.frame_by_id(frame_id)?;
+        Some(self.build_local_descs(frame))
+    }
+
+    /// Resolve a frame id to the interpreter frame it addresses.
+    ///
+    /// Until Priroda can address more than the active thread, only frames whose
+    /// encoded thread matches the active thread resolve here.
+    fn frame_by_id(&self, frame_id: FrameId) -> Option<&Frame<'tcx, Provenance, FrameExtra<'tcx>>> {
+        let (thread, frame_index) = frame_id.parts()?;
+        if thread != self.ecx.active_thread() {
+            return None;
+        }
+        let stack = self.ecx.active_thread_stack();
+        stack.get(stack.len().checked_sub(1)?.checked_sub(frame_index)?)
+    }
+
+    /// Describe the user-relevant frame addressed by `frame_id`, or `None` if the
+    /// id does not address a live user frame.
+    pub(super) fn stack_frame(&self, frame_id: FrameId) -> Option<StackFrameDesc> {
+        let frame = self.frame_by_id(frame_id)?;
+        if frame.extra.user_relevance != u8::MAX {
+            return None;
+        }
+        Some(StackFrameDesc {
+            id: frame_id,
+            name: frame.instance().to_string(),
+            source: self.source_location(frame.current_span()),
+        })
     }
 
     /// Renders the current byte range of an indirect MIR value.
@@ -833,13 +925,39 @@ impl<'tcx> PrirodaContext<'tcx> {
             Some(Either::Left(_) | Either::Right(_)) => {
                 let op = self
                     .ecx
-                    .local_to_op(local, None)
+                    .local_at_frame_to_op(frame, local, None)
                     .expect("this error can only occur in CTFE on generic code");
                 local_desc.value = self.render_source_shaped_op(op);
             }
         };
 
         Some(local_desc)
+    }
+
+    /// Evaluate a projected MIR place relative to a specific frame.
+    ///
+    /// `ecx.eval_place_to_op` always starts from the current (innermost) frame,
+    /// so caller frames need this variant that resolves the place's base local
+    /// against `frame` and then applies the projection.
+    fn eval_place_to_op_at_frame(
+        &self,
+        frame: &Frame<'tcx, Provenance, FrameExtra<'tcx>>,
+        place: mir::Place<'tcx>,
+    ) -> InterpResult<'tcx, OpTy<'tcx>> {
+        let mut op = self.ecx.local_at_frame_to_op(frame, place.local, None)?;
+        for elem in place.projection.iter() {
+            // `project` resolves `Index(local)` through the current frame. An
+            // explicit unsupported value is better than reading the wrong frame's
+            // index local.
+            if matches!(elem, ProjectionElem::Index(_)) {
+                return Err(miri::err_unsup_format!(
+                    "frame-relative debug-info index projections are not supported yet"
+                ))
+                .into();
+            }
+            op = self.ecx.project(&op, elem)?;
+        }
+        interp_ok(op)
     }
 
     fn build_local_descs(
@@ -902,8 +1020,7 @@ impl<'tcx> PrirodaContext<'tcx> {
                     let source_projection =
                         Self::render_source_projection(var_debug_info.composite.as_deref());
                     let value = self
-                        .ecx
-                        .eval_place_to_op(*place, None)
+                        .eval_place_to_op_at_frame(frame, *place)
                         .map(|op| self.render_source_shaped_op(op))
                         .unwrap_or_else(|err| format!("<error: {}>", err.to_string()));
 
@@ -932,6 +1049,7 @@ pub(super) enum DebuggerCommand {
     ListLocals,
     Print(usize),
     Follow(AllocId, usize),
+    Backtrace,
 }
 
 pub(super) enum BreakpointSetResult {
@@ -946,6 +1064,7 @@ pub(super) enum CommandResult {
     Locals(Vec<LocalDesc>),
     SingleLocal(Option<LocalDesc>),
     Memory(String),
+    Backtrace(Vec<StackFrameDesc>),
     // FIXME: distinguish terminating the debugger session from disconnecting a
     // frontend and terminating the interpreted program once multiple frontends exist.
     TerminateSession,

@@ -1,0 +1,4 @@
+b tests/ui/cli/backtrace.rs:2
+c
+bt
+q

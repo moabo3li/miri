@@ -1,0 +1,23 @@
+Content-Length: {CONTENT_LENGTH}
+
+{"seq":1,"type":"response","request_seq":1,"success":true,"command":"initialize","body":{"supportsConfigurationDoneRequest":true,"supportsSingleThreadExecutionRequests":true},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":2,"type":"event","event":"initialized"}Content-Length: {CONTENT_LENGTH}
+
+{"seq":3,"type":"response","request_seq":2,"success":true,"command":"launch","error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":4,"type":"response","request_seq":3,"success":true,"command":"setBreakpoints","body":{"breakpoints":[{"verified":true,"source":{"path":"tests/ui/dap/selected_frame_locals.rs"},"line":4}]},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":5,"type":"response","request_seq":4,"success":true,"command":"configurationDone","error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":6,"type":"event","event":"stopped","body":{"reason":"entry","description":null,"threadId":1,"preserveFocusHint":null,"text":null,"allThreadsStopped":true,"hitBreakpointIds":null}}Content-Length: {CONTENT_LENGTH}
+
+{"seq":7,"type":"response","request_seq":5,"success":true,"command":"continue","body":{"allThreadsContinued":true},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":8,"type":"event","event":"stopped","body":{"reason":"breakpoint","description":null,"threadId":1,"preserveFocusHint":null,"text":null,"allThreadsStopped":true,"hitBreakpointIds":null}}Content-Length: {CONTENT_LENGTH}
+
+{"seq":9,"type":"response","request_seq":6,"success":true,"command":"stackTrace","body":{"stackFrames":[{"id":1,"name":"inner","source":{"name":"selected_frame_locals.rs","path":"{MANIFEST_DIR}/tests/ui/dap/selected_frame_locals.rs","sourceReference":0},"line":4,"column":9},{"id":2,"name":"outer","source":{"name":"selected_frame_locals.rs","path":"{MANIFEST_DIR}/tests/ui/dap/selected_frame_locals.rs","sourceReference":0},"line":10,"column":5},{"id":3,"name":"main","source":{"name":"selected_frame_locals.rs","path":"{MANIFEST_DIR}/tests/ui/dap/selected_frame_locals.rs","sourceReference":0},"line":15,"column":5}],"totalFrames":3},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":10,"type":"response","request_seq":7,"success":true,"command":"scopes","body":{"scopes":[{"name":"Locals","presentationHint":"locals","variablesReference":2,"indexedVariables":0,"expensive":false,"source":{"name":"selected_frame_locals.rs","path":"{MANIFEST_DIR}/tests/ui/dap/selected_frame_locals.rs","sourceReference":0},"line":10,"column":5}]},"error":null}Content-Length: {CONTENT_LENGTH}
+
+{"seq":11,"type":"response","request_seq":8,"success":true,"command":"variables","body":{"variables":[{"name":"_0","value":"<uninit>","type":"()","variablesReference":0},{"name":"outer_marker","value":"2_i32","type":"i32","variablesReference":0},{"name":"_2","value":"<uninit>","type":"()","variablesReference":0}]},"error":null}
