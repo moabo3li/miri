@@ -55,30 +55,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Replace them with a placeholder so path-length differences between
     // machines do not make Content-Length drift from the normalised body.
     let content_length_regex = Regex::new(r"Content-Length: \d+").unwrap();
-    // The set of compiler-generated MIR temporaries and the numeric MIR local
-    // indices are properties of rustc's MIR construction, not of Priroda's
-    // rendering, so they churn on every rustup that touches MIR building.
-    // Skip the fixtures that only assert that inventory:
-    //
-    // - A row with no source name whose value is `<dead>` is a compiler slot
-    //   that is out of scope, so in a blanket `locals` listing it records only
-    //   rustc's liveness accounting, never a name or a rendered value. Every
-    //   named local and every live value is still asserted, including pointer
-    //   and uninit rendering. An explicit `print <id>` still asserts such a
-    //   slot on purpose; those rows carry no `Name:` field and are unaffected.
-    // - `Id: _N` is canonicalized rather than deleted: the projection suffix
-    //   (`.0`, `.*`, ` as variant#1.0`) is what records which field or variant
-    //   a source name maps to, so it stays.
-    //
-    // DAP output is unaffected: it carries the index inside a JSON name
-    // (`"name":"_3"`), never as `Id: _3`. The `print <id>` commands in the
-    // `.stdin` fixtures are also unaffected by stdout normalization.
-    // The optional `(priroda) ` prompt prefix has to be part of the match: the
-    // first row of a block is printed on the prompt line, so dropping only the
-    // row would splice the next row onto a dangling prompt.
+    // Local indices are assigned while MIR is built, so a rustup that builds MIR
+    // differently renumbers them and breaks fixtures that assert nothing about
+    // Priroda. Canonicalize the index but keep the projection suffix (`.0`,
+    // `.*`, ` as variant#1.0`): the suffix is what records which field or
+    // variant a source name maps to. This also rewrites the index echoed by
+    // `print <id>`, so those rows stop pinning which local they addressed.
+    let local_id_regex = Regex::new(r"Id: _[0-9]+").unwrap();
+    // An unnamed `<dead>` slot has no name and no rendered value, so listing it
+    // only asserts where rustc put a temporary: upstream has both added and
+    // removed the same `&u8` dead temporary across rustups. Named locals stay
+    // asserted even when dead, and unnamed ones when they carry a value.
+    // `print <id>` output has no `Name:` field, so this rule never drops it.
+    // The optional `(priroda) ` prompt has to be part of the match: the first
+    // row of a block is printed on the prompt line, so dropping only the row
+    // would splice the next row onto a dangling prompt.
     let unnamed_dead_local_regex =
         Regex::new(r"(?:\(priroda\) )?Name: <none>, Id: _[0-9]+[^\n]*Value: <dead>\n?").unwrap();
-    let local_id_regex = Regex::new(r"Id: _[0-9]+").unwrap();
     config.comment_defaults.base().normalize_stdout.extend([
         (manifest_dir_regex.into(), b"{MANIFEST_DIR}".to_vec()),
         (miri_dir_regex.into(), b"{MIRI_DIR}".to_vec()),
