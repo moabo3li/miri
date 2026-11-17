@@ -67,11 +67,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // removed the same `&u8` dead temporary across rustups. Named locals stay
     // asserted even when dead, and unnamed ones when they carry a value.
     // `print <id>` output has no `Name:` field, so this rule never drops it.
-    // The optional `(priroda) ` prompt has to be part of the match: the first
-    // row of a block is printed on the prompt line, so dropping only the row
-    // would splice the next row onto a dangling prompt.
+    // The id is matched broadly so the rule does not depend on running before
+    // the one below it. The optional `(priroda) ` prompt has to be part of the
+    // match: the first row of a block is printed on the prompt line, so
+    // dropping only the row would splice the next row onto a dangling prompt.
     let unnamed_dead_local_regex =
-        Regex::new(r"(?:\(priroda\) )?Name: <none>, Id: _[0-9]+[^\n]*Value: <dead>\n?").unwrap();
+        Regex::new(r"(?:\(priroda\) )?Name: <none>, Id: [^,]+, [^\n]*Value: <dead>\n?").unwrap();
     config.comment_defaults.base().normalize_stdout.extend([
         (manifest_dir_regex.into(), b"{MANIFEST_DIR}".to_vec()),
         (miri_dir_regex.into(), b"{MIRI_DIR}".to_vec()),
