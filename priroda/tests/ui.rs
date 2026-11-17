@@ -63,10 +63,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `print <id>`, so those rows stop pinning which local they addressed.
     let local_id_regex = Regex::new(r"Id: _[0-9]+").unwrap();
     // An unnamed `<dead>` slot has no name and no rendered value, so listing it
-    // only asserts where rustc put a temporary: upstream has both added and
-    // removed the same `&u8` dead temporary across rustups. Named locals stay
-    // asserted even when dead, and unnamed ones when they carry a value.
-    // `print <id>` output has no `Name:` field, so this rule never drops it.
+    // only asserts rustc's inventory and that slot's type string, both of which
+    // come from rustc. Upstream has both added and removed the same `&u8` dead
+    // temporary across rustups. Named locals stay asserted even when dead, and
+    // unnamed ones when they carry a value. `print <id>` output has no `Name:`
+    // field, so this rule never drops it.
     // The id is matched broadly so the rule does not depend on running before
     // the one below it. The optional `(priroda) ` prompt has to be part of the
     // match: the first row of a block is printed on the prompt line, so
